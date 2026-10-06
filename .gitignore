@@ -1,0 +1,9 @@
+# Resultados de cada revisión: contienen capturas con saldos y datos de cuentas
+runs/
+
+# Binario compilado de tools/mirror.swift (se genera con: swiftc -O tools/mirror.swift -o tools/mirror)
+tools/mirror
+
+tools/.current_run
+__pycache__/
+.DS_Store
