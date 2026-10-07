@@ -8,11 +8,11 @@ guarda captura + OCR y lo registra en runs/<run>/steps.jsonl.
   qa.py step <flujo> "<descripción>" tap <nx> <ny>
   qa.py step <flujo> "<descripción>" tapt "<texto visible>" [n]   # toca el n-ésimo texto que coincida
   qa.py step <flujo> "<descripción>" swipe <nx1> <ny1> <nx2> <ny2>
-  qa.py step <flujo> "<descripción>" scroll down|up
-  qa.py step <flujo> "<descripción>" back                          # gesto volver (borde izquierdo)
+  qa.py step <flujo> "<descripción>" scroll down|up [pixeles]          # rueda del mouse; por defecto 400
+  qa.py step <flujo> "<descripción>" back                          # gesto volver (poco fiable: mejor tap en la flecha ←)
   qa.py step <flujo> "<descripción>" type "<texto>"
   qa.py step <flujo> "<descripción>" none                          # solo captura el estado actual
-  qa.py issue <severidad> <categoria> "<descripción>"            # asociado al último paso
+  qa.py issue <alta|media|baja> <categoria> "<descripción>" [paso]  # por defecto, el último paso
   qa.py screen                                                     # OCR de la pantalla actual sin registrar
 """
 import json
@@ -30,23 +30,21 @@ CURRENT = os.path.join(TOOLS, ".current_run")
 STABLE_FRAMES = 3       # capturas consecutivas iguales para considerar la pantalla estable
 TIMEOUT = 25.0
 
-# Palabras que delatan inglés en UI (se excluyen las que también son español: total, error, final, etc.)
-EN_WORDS = set("""
-the and of to your you please loading submit cancel next back continue save account balance amount
-date details settings transfer investment investments fund funds close search select required invalid failed
-success view more terms conditions confirm edit delete add done skip start home profile help password sign login
-logout welcome available pending approved rejected status type name email phone address country currency request
-review upload download document documents network something went wrong try again unknown null undefined nan
-true false with from for this that are is not yes buy sell order orders portfolio holdings performance
-deposit withdraw withdrawal history summary overview position positions price prices market value yield
-open opening opened closed new get started learn read here click tap continue agree accept decline
-my our all none any total_ empty no_data nodata error_ placeholder lorem ipsum text title subtitle label button
+# Regla de idioma: el inglés está permitido; solo se marca el portugués y las claves i18n sin resolver.
+# Palabras portuguesas que no existen en español (incluye formas sin tilde, porque el OCR a veces las pierde;
+# se excluyen las que sin tilde coinciden con español: patrimonio, transferencia, ate, agora, dados, erro).
+PT_WORDS = set("""
+tesouro outros outras outro outra limpar pesquisar brasileiro brasileira educacional
+você voce não nao também tambem até então entao ajuda dúvidas duvidas perguntas frequentes
+ação acao ações acoes aplicação aplicacao aplicações aplicacoes investimento investimentos investir
+renda fixa variável variavel rendimento rentabilidade carteira fundos ativo ativos conta contas
+resgate resgatar saque extrato transferência senha cadastro voltar avançar avancar fechar
+carregando atualizar atualizado atualização atualizacao hoje ontem mês
+patrimônio disponível disponivel indisponível indisponivel nenhum nenhuma mais
+corretora corretagem taxa taxas ordem ordens venda quantidade preço preco preços precos
+liquidação liquidacao cotação cotacao posição posicao posições posicoes
+obrigado selecionar selecione informações informacoes aguarde sucesso
 """.split())
-PT_WORDS = set("""tesouro outros limpar buscar_ pesquisar brasileiro brasileira educacional você voce não nao também ações acoes investimento investimentos
-renda fixa variável saldo_ conta contas resgate resgatar carteira rentabilidade_ obrigado ativos ativo fundos_
-selecionar selecione mais_ dados informações informacoes aguarde carregando erro sucesso""".split())
-WHITELIST = {"offshore", "btg", "pactual", "usd", "clp", "etf", "etfs", "ok", "pdf", "id", "app", "email", "online",
-             "blog", "web", "nav", "isin", "swift", "iban", "aba", "pershing", "ach", "wire", "holdings", "ltd", "inc", "corporation", "corp", "trust", "group", "select", "sec", "ultra", "proshares", "ishares", "invesco", "kyc", "fatca", "crs"}
 NO_ACCENT = {x.split(":")[0]: x.split(":")[1] for x in """
 liquidacion:liquidación operacion:operación operaciones:operaciones dias:días ordenes:órdenes orden:orden
 informacion:información transaccion:transacción ejecucion:ejecución expiracion:expiración comision:comisión
@@ -56,7 +54,7 @@ aqui:aquí despues:después ningun:ningún seleccion:selección accion:acción c
 posicion:posición sesion:sesión condicion:condición descripcion:descripción situacion:situación
 inversion:inversión rentabilidad:rentabilidad periodo:período minimo:mínimo maximo:máximo electronico:electrónico
 politica:política rescision:rescisión suscripcion:suscripción asignacion:asignación evolucion:evolución
-distribucion:distribución categoria:categoría estrategia:estrategia unico:único publico:público
+distribucion:distribución categoria:categoría habiles:hábiles habil:hábil estrategia:estrategia unico:único publico:público
 """.split() if x.split(":")[0] != x.split(":")[1]}
 KEY_PATTERN = re.compile(r"^[a-z]+([._][a-zA-Z0-9]+){1,}$")   # claves i18n sin traducir: offshore.home.title
 
@@ -82,21 +80,17 @@ def ocr(path):
     return json.loads(mirror("ocr", path))
 
 
-def english_findings(items):
+def lang_findings(items):
+    """Textos en portugués o claves i18n sin resolver. El inglés NO se marca (está permitido)."""
     found = []
     for it in items:
         t = it["text"].strip()
         if KEY_PATTERN.match(t):
             found.append({"text": t, "reason": "clave i18n sin traducir", **box(it)})
             continue
-        words = re.findall(r"[A-Za-zÀ-ÿ']+", t)
-        pt = [w for w in words if w.lower() in PT_WORDS]
+        pt = [w for w in re.findall(r"[A-Za-zÀ-ÿ']+", t) if w.lower() in PT_WORDS]
         if pt:
             found.append({"text": t, "reason": "portugués: " + ", ".join(pt), **box(it)})
-            continue
-        hits = [w for w in words if w.lower() in EN_WORDS and w.lower() not in WHITELIST]
-        if hits and len(hits) >= max(1, len(words) // 3):
-            found.append({"text": t, "reason": "inglés: " + ", ".join(hits), **box(it)})
     return found
 
 
@@ -207,7 +201,7 @@ def cmd_step(flow, desc, action, args):
         "load_time": load_time, "first_change": round(first_change, 2) if first_change else None,
         "timed_out": timed_out, "changed": changed, "diff_ratio": diff_ratio, "frames": frames,
         "shot": f"shots/{idx:03d}.png", "ocr": items,
-        "english": english_findings(items), "ui": ui_findings(items),
+        "lang": lang_findings(items), "ui": ui_findings(items),
     }
     with open(os.path.join(rd, "steps.jsonl"), "a") as f:
         f.write(json.dumps(step, ensure_ascii=False) + "\n")
@@ -218,7 +212,7 @@ def cmd_step(flow, desc, action, args):
     if load_time > 3: flags.append(f"⚠ lento {load_time}s")
     print(f"#{idx} [{flow}] {desc} — {action_desc} — {load_time}s {' '.join(flags)}")
     print_screen(items)
-    for e in step["english"] + step["ui"]:
+    for e in step["lang"] + step["ui"]:
         print(f"  ! {e['reason']}: «{e['text']}»")
 
 

@@ -19,7 +19,7 @@ SEV_ORDER = {"alta": 0, "media": 1, "baja": 2}
 SEV_LABEL = {"alta": "Alta", "media": "Media", "baja": "Baja"}
 SEV_ICON = {"alta": "▲", "media": "◆", "baja": "●"}
 CAT_LABEL = {
-    "error": "Error / fallo", "datos": "Datos inconsistentes", "i18n": "Idioma (no español)",
+    "error": "Error / fallo", "datos": "Datos inconsistentes", "i18n": "Idioma (portugués)",
     "ortografia": "Ortografía", "texto": "Redacción / consistencia", "formato": "Formato de números y fechas",
     "ux": "Experiencia de uso", "ui": "Visual / layout", "rendimiento": "Rendimiento",
     "navegacion": "Navegación", "interaccion": "Interacción / toque", "contenido": "Contenido",
@@ -37,7 +37,7 @@ def load(rd):
     issues = [json.loads(l) for l in open(ip) if l.strip()] if os.path.exists(ip) else []
     meta = json.load(open(os.path.join(rd, "meta.json")))
     for s in steps:  # recalcula con los detectores actuales (corrige falsos positivos de pasos viejos)
-        s["english"] = qa.english_findings(s["ocr"])
+        s["lang"] = qa.lang_findings(s["ocr"])
         s["ui"] = qa.ui_findings(s["ocr"])
     return steps, issues, meta
 
@@ -58,10 +58,10 @@ def is_transition(s):
     return s["action"] != "captura" and not s["action"].startswith("scroll")
 
 
-def lang_findings(steps):
+def lang_groups(steps):
     seen = OrderedDict()
     for s in steps:
-        for f in s["english"]:
+        for f in s["lang"]:
             key = f["text"].strip()
             if key not in seen:
                 seen[key] = {"f": f, "steps": []}
@@ -122,10 +122,30 @@ def build(rd):
     slow = sorted([s for s in trans if s["load_time"] > SLOW], key=lambda s: -s["load_time"])
     sev_count = Counter(i["severity"] for i in issues)
     cat_count = Counter(i["category"] for i in issues)
-    lang = lang_findings(steps)
+    lang = lang_groups(steps)
     accents = accent_findings(steps)
     errors = [i for i in issues if i["category"] == "error"]
     first_ts, last_ts = steps[0]["ts"], steps[-1]["ts"]
+
+    # comparación opcional con una revisión anterior (runs/<run>/comparacion.json, escrita a mano)
+    comp_path = os.path.join(rd, "comparacion.json")
+    comp_html, comp_nav = "", ""
+    if os.path.exists(comp_path):
+        comp = json.load(open(comp_path))
+        order = ["persiste", "corregido", "no reproducido", "no revisado"]
+        counts = Counter(it["estado"] for it in comp["items"])
+        rows = "".join(
+            f'<tr><td><span class="estado estado-{it["estado"].replace(" ", "-")}">{esc(it["estado"].capitalize())}</span></td>'
+            f'<td>{esc(it["texto"])}</td></tr>'
+            for it in sorted(comp["items"], key=lambda it: order.index(it["estado"]) if it["estado"] in order else 9))
+        summary = " · ".join(f"{counts[e]} {e}" for e in order if counts[e])
+        comp_html = f"""
+<section id="comparacion">
+<h2>Comparación con la revisión anterior</h2>
+<p class="muted">Contra {esc(comp.get("anterior", ""))}. {summary}.</p>
+<div class="table-scroll"><table><thead><tr><th>Estado</th><th>Hallazgo anterior</th></tr></thead><tbody>{rows}</tbody></table></div>
+</section>"""
+        comp_nav = '<a href="#comparacion">Comparación</a>'
 
     # ---------- secciones ----------
     kpis = f"""
@@ -135,7 +155,7 @@ def build(rd):
       <div class="kpi"><div class="kpi-n">{len(issues)}</div><div class="kpi-l">hallazgos</div>
         <div class="kpi-sub">{sev_badge('alta')} {sev_count['alta']} &nbsp; {sev_badge('media')} {sev_count['media']} &nbsp; {sev_badge('baja')} {sev_count['baja']}</div></div>
       <div class="kpi"><div class="kpi-n">{len(errors)}</div><div class="kpi-l">errores funcionales</div></div>
-      <div class="kpi"><div class="kpi-n">{len(lang)}</div><div class="kpi-l">textos no en español (detección automática)</div></div>
+      <div class="kpi"><div class="kpi-n">{len(lang)}</div><div class="kpi-l">textos en portugués o sin traducir (detección automática)</div></div>
       <div class="kpi"><div class="kpi-n">{statistics.median(times):.1f} s</div><div class="kpi-l">mediana entre pantallas</div>
         <div class="kpi-sub">p90 {p90:.1f} s · {len(slow)} transiciones &gt; {SLOW:.0f} s · {len(timeouts)} nunca se estabilizaron</div></div>
     </div>"""
@@ -221,8 +241,8 @@ def build(rd):
                 badge = f'<a class="pill sev-{sev}" href="#{iss[0]["id"]}">{len(iss)} hallazgo{"s" if len(iss)>1 else ""}</a>'
             t = "" if not is_transition(s) else (
                 f'<span class="time {"slow" if s["load_time"]>SLOW else ""}">{"⏳ " if s.get("timed_out") else ""}{s["load_time"]:.1f} s</span>')
-            lang_b = f'<span class="pill lang">{len(s["english"])} idioma</span>' if s["english"] else ""
-            cells.append(f'<figure class="step {"has-issue" if iss else ""}">{shot_fig(s, s["english"])}'
+            lang_b = f'<span class="pill lang">{len(s["lang"])} idioma</span>' if s["lang"] else ""
+            cells.append(f'<figure class="step {"has-issue" if iss else ""}">{shot_fig(s, s["lang"])}'
                          f'<figcaption><b>#{s["idx"]}</b> {esc(s["desc"])}<div class="step-meta">{t}{badge}{lang_b}</div></figcaption></figure>')
         flow_html.append(f"""
       <details class="flow" {'open' if nerr else ''}>
@@ -287,6 +307,10 @@ nav.toc a {{ white-space: nowrap; padding: 4px 10px; border-radius: 999px; backg
 .filters {{ display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0 14px; }}
 .filters button, .filters select {{ font: inherit; font-size: 13px; padding: 4px 12px; border-radius: 999px; border: 0; background: var(--surface); color: var(--ink); box-shadow: inset 0 0 0 1px var(--ring); cursor: pointer; }}
 .filters button[aria-pressed="true"] {{ background: var(--ink); color: var(--bg); }}
+.estado {{ display: inline-block; font-size: 12px; font-weight: 600; padding: 1px 8px; border-radius: 999px; white-space: nowrap; box-shadow: inset 0 0 0 1.5px var(--ring); }}
+.estado-persiste {{ box-shadow: inset 0 0 0 1.5px var(--crit); }}
+.estado-corregido {{ box-shadow: inset 0 0 0 1.5px var(--good); }}
+.estado-no-reproducido, .estado-no-revisado {{ color: var(--ink-2); }}
 .issue {{ display: grid; grid-template-columns: 110px 1fr; gap: 14px; background: var(--surface); border-radius: 10px; padding: 12px; margin-bottom: 10px; box-shadow: inset 0 0 0 1px var(--ring); scroll-margin-top: 60px; }}
 .issue:target {{ box-shadow: inset 0 0 0 2px var(--accent); }}
 .issue p {{ margin: 6px 0 0; }}
@@ -346,7 +370,7 @@ dialog::backdrop {{ background: rgba(0,0,0,.75); }}
   <div class="muted">App BTG Pactual (iPhone, controlado vía Duplicación del iPhone) · {esc(meta['started'][:10])} · {first_ts}–{last_ts} · run <code>{esc(meta['name'])}</code></div></div>
 </header>
 <nav class="toc" aria-label="Secciones">
-  <a href="#resumen">Resumen</a><a href="#hallazgos">Hallazgos ({len(issues)})</a><a href="#errores">Errores ({len(errors)})</a>
+  <a href="#resumen">Resumen</a>{comp_nav}<a href="#hallazgos">Hallazgos ({len(issues)})</a><a href="#errores">Errores ({len(errors)})</a>
   <a href="#idioma">Idioma</a><a href="#tiempos">Tiempos</a><a href="#flujos">Flujos ({len(flows)})</a><a href="#sin-efecto">Toques sin efecto</a><a href="#metodo">Metodología</a>
 </nav>
 
@@ -354,6 +378,8 @@ dialog::backdrop {{ background: rgba(0,0,0,.75); }}
 {kpis}
 <div class="callout"><h3 style="margin-top:0">Hallazgos de severidad alta</h3><ol>{summary_list}</ol></div>
 </section>
+
+{comp_html}
 
 <section id="hallazgos">
 <h2>Hallazgos</h2>
@@ -377,8 +403,8 @@ dialog::backdrop {{ background: rgba(0,0,0,.75); }}
 <h2>Idioma y ortografía</h2>
 <h3>Hallazgos confirmados</h3>
 <ul class="callout">{i18n_issues}</ul>
-<h3>Detección automática de textos en inglés o portugués (OCR) · {len(lang)} textos únicos</h3>
-<p class="muted">Cada texto se marca en rojo sobre la captura. Los nombres propios de empresas y tickers se excluyen.</p>
+<h3>Detección automática de textos en portugués o claves sin traducir (OCR) · {len(lang)} textos únicos</h3>
+<p class="muted">Cada texto se marca en rojo sobre la captura. El inglés está permitido y no se marca.</p>
 <div class="table-scroll"><table><thead><tr><th>Captura</th><th>Texto</th><th>Flujos</th><th>Pasos</th></tr></thead><tbody>{''.join(lang_rows)}</tbody></table></div>
 <h3>Palabras sin tilde (detección automática) · {len(accents)}</h3>
 <div class="table-scroll"><table><thead><tr><th>Captura</th><th>Corrección</th><th>Textos donde aparece</th><th>Pantallas</th></tr></thead><tbody>{acc_rows}</tbody></table></div>
@@ -400,7 +426,7 @@ dialog::backdrop {{ background: rgba(0,0,0,.75); }}
 
 <section id="flujos">
 <h2>Flujos (capturas paso a paso)</h2>
-<p class="muted">Los flujos con hallazgos aparecen abiertos. El borde rojo marca los pasos con hallazgos y el recuadro rojo dentro de la captura marca los textos que no están en español.</p>
+<p class="muted">Los flujos con hallazgos aparecen abiertos. El borde rojo marca los pasos con hallazgos y el recuadro rojo dentro de la captura marca los textos en portugués o sin traducir.</p>
 {''.join(flow_html)}
 </section>
 
@@ -414,11 +440,10 @@ dialog::backdrop {{ background: rgba(0,0,0,.75); }}
 <h2>Metodología y limitaciones</h2>
 <ul class="callout">
 <li>El iPhone se controló desde el Mac con la Duplicación del iPhone, con scripts propios: <code>tools/mirror</code> (captura, OCR con Apple Vision en español e inglés, toques y scroll) y <code>tools/qa.py</code> (pasos, tiempos y detecciones).</li>
-<li>Por seguridad <b>no se confirmó ninguna operación</b>: las ventas llegaron hasta la pantalla «Confirmar» y no se tocaron «Cancelar» órdenes, transferencias ni abonos.</li>
+<li>Por seguridad <b>no se confirmó ninguna operación</b>: compras, ventas y transferencias llegaron como máximo a la pantalla de revisión, sin tocar el botón final, y no se cancelaron órdenes.</li>
 <li>Los saltos en la numeración de pasos corresponden a capturas descartadas por errores del script (navegación), no de la app.</li>
-<li>Las cuentas de origen/destino no tenían saldo, así que los flujos Transferir y Abonar se validaron solo hasta la validación de monto.</li>
-<li>La detección de idioma es heurística (OCR + diccionario). Los hallazgos de la lista principal se verificaron visualmente en la captura.</li>
-<li>Ejecutado fuera del horario de mercado (19:20–19:45 hora de Chile): algunos errores de gráficos/precios podrían depender del horario, pero igual deberían mostrar un estado coherente.</li>
+<li>Regla de idioma: <b>el inglés está permitido</b>; solo se marcan textos en portugués y claves de traducción sin resolver. La detección es heurística (OCR + lista de palabras); los hallazgos de la lista principal se verificaron visualmente en la captura.</li>
+<li>Ejecutado entre las {first_ts} y las {last_ts} (hora de Chile). Los precios y gráficos pueden comportarse distinto según el estado del mercado, pero siempre deberían mostrar un estado coherente.</li>
 </ul>
 </section>
 </div>
